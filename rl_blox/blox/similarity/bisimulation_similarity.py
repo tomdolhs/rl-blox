@@ -1,10 +1,5 @@
 import numpy as np
 import gymnasium as gym
-import jax.numpy as jnp
-from ott.geometry import geometry
-from ott.problems.linear import linear_problem
-from ott.solvers.linear import sinkhorn
-
 from scipy.optimize import linprog
 
 
@@ -48,35 +43,6 @@ def kantorovich_distance(d: np.ndarray, p: np.ndarray = None, q: np.ndarray = No
     return res.fun
 
 
-def kantorovich_distance_ott(d: jnp.ndarray, p: jnp.ndarray = None, q: jnp.ndarray = None, epsilon: float = 1e-2):
-    """
-    Calculates Kantorovich distance using OTT-JAX.
-
-    Parameters
-    ----------
-    d : jnp.ndarray
-        Cost matrix with shape (n, m)
-    p : jnp.ndarray | None
-        Source distribution (n,). If None, uniform.
-    q : jnp.ndarray | None
-        Target distribution (m,). If None, uniform.
-    epsilon : float
-        Entropic regularization parameter. Lower = closer to exact LP.
-    """
-    n, m = d.shape
-    if p is None:
-        p = jnp.ones(n) / n
-    if q is None:
-        q = jnp.ones(m) / m
-
-    geom = geometry.Geometry(cost_matrix=d, epsilon=epsilon)
-    prob = linear_problem.LinearProblem(geom, a=p, b=q)
-    solver = sinkhorn.Sinkhorn()
-    out = solver(prob)
-    print(out.reg_ot_cost)
-    return out.reg_ot_cost
-
-
 def bisimulation_distance(R_i, R_j, P_i, P_j, c=0.5, tol=1e-6, max_iter=1000):
     """
     Calculates the bisimulation distance between two MDPs using value iteration.
@@ -110,7 +76,7 @@ def bisimulation_distance(R_i, R_j, P_i, P_j, c=0.5, tol=1e-6, max_iter=1000):
                 vals = []
                 for a in range(n_actions):
                     reward_diff = abs(expected_R_i[i, a] - expected_R_j[j, a])
-                    trans_diff = kantorovich_distance_ott(d, P_i[i, a], P_j[j, a])
+                    trans_diff = kantorovich_distance(d, P_i[i, a], P_j[j, a])
                     vals.append((1 - c) * reward_diff + c * trans_diff)
                 d_new[i, j] = max(vals)
         if np.max(np.abs(d_new - d)) < tol:
