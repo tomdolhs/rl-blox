@@ -29,7 +29,7 @@ class Similarity(ABC):
         """
         pass
 
-    def similarity_matrix(self, envs, **kwargs):
+    def compute_matrix(self, envs, **kwargs):
         """
         Computes the similarity matrix between a list of environments.
 
