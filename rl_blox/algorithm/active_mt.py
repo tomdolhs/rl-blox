@@ -184,7 +184,7 @@ class SimilaritySelector(TaskSelector):
         self.priority_scores = np.sum(self.similarity_matrix, axis=1)
         self.sampling_probs = self.priority_scores / np.sum(self.priority_scores)
         if inverse:
-            self.sampling_probs -= 1
+            self.sampling_probs = 1 - self.sampling_probs
 
     def select(self) -> int:
         super().select()
