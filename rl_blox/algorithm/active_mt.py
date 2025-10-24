@@ -170,6 +170,34 @@ class SimilarityUCBSelector(TaskSelector):
         self.last_rewards[self.chosen_arm].append(reward)
 
 
+class SimilaritySelector(TaskSelector):
+    def __init__(
+            self,
+            tasks: ArrayLike,
+            similarity_metric: Similarity,
+            inverse: bool=False,
+    ):
+        super().__init__(tasks)
+        self.n_contexts = tasks.shape[0]
+        self.similarity_matrix = similarity_metric.compute_matrix(tasks)
+
+        self.priority_scores = np.sum(self.similarity_matrix, axis=1)
+        self.sampling_probs = self.priority_scores / np.sum(self.priority_scores)
+        if inverse:
+            self.sampling_probs -= 1
+
+    def select(self) -> int:
+        super().select()
+        selected = np.random.choice(
+            self.n_contexts,
+            p=self.sampling_probs
+        )
+        return self.tasks[selected]
+
+    def feedback(self, reward: float):
+        super().feedback(reward)
+
+
 class RoundRobinSelector(TaskSelector):
     def __init__(self, tasks, **kwargs):
         super().__init__(tasks)
