@@ -242,6 +242,25 @@ TASK_SELECTORS = {
             "op": "neg",
         },
     ),
+    "Similarity": (
+        SimilaritySelector,
+        {
+            "inverse": False,
+        },
+    ),
+    "Dissimilarity": (
+        SimilaritySelector,
+        {
+            "inverse": True,
+        },
+    ),
+    "Similarity UCB": (
+        SimilarityUCBSelector,
+        {
+            "baseline": None,
+            "op": "neg",
+        },
+    ),
 }
 
 
