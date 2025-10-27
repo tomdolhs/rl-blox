@@ -10,9 +10,11 @@ from ..blox.multitask import (
     RoundRobinSelector,
     TaskSelectionMixin,
     TaskSelector,
+    SimilaritySelector,
+    SimilarityUCBSelector,
 )
 from ..blox.replay_buffer import MultiTaskReplayBuffer
-from ..blox.similarity import Similarity
+from ..blox.similarity import BisimulationSimilarity
 from ..logging.logger import LoggerBase
 
 TASK_SELECTORS = {
@@ -54,6 +56,7 @@ TASK_SELECTORS = {
     "Dissimilarity": (
         SimilaritySelector,
         {
+            "similarity_metric": BisimulationSimilarity(),
             "inverse": True,
         },
     ),

@@ -7,6 +7,7 @@ import numpy as np
 from gymnasium.wrappers import TransformObservation
 from numpy.typing import ArrayLike
 
+from .similarity import Similarity
 from ..blox.mapb import DUCB
 
 
@@ -173,6 +174,109 @@ class RoundRobinSelector(TaskSelector):
         super().select()
         self.i += 1
         return self.tasks[self.i % len(self.tasks)]
+
+    def feedback(self, reward: float):
+        super().feedback(reward)
+
+
+class SimilarityUCBSelector(TaskSelector):
+    def __init__(
+            self,
+            tasks: ArrayLike,
+            similarity_metric: Similarity,
+            c: float,
+            baseline: str | None,
+            op: str | None,
+            verbose: bool = False,
+            **kwargs,
+    ):
+        super().__init__(tasks)
+        self.baseline = baseline
+        self.op = op
+        self.verbose = verbose
+        self.heuristic_params = kwargs
+        self.ucb_c = c
+        self.n_contexts = tasks.shape[0]
+        self.similarity_matrix = similarity_metric.compute_matrix(tasks)
+        self.N = np.full(self.n_contexts, 1e-6)
+        self.Q = np.zeros(self.n_contexts)
+        self.total_N = 0.0
+        self.last_rewards = [[] for _ in range(self.n_contexts)]
+        self.chosen_arm = -1
+
+    def select(self) -> int:
+        super().select()
+        log_total = np.log(self.total_N + 1)
+        exploration_term = self.ucb_c * np.sqrt(log_total / self.N)
+        ucb_scores = self.Q + exploration_term
+        self.chosen_arm = np.argmax(ucb_scores)
+        return self.tasks[self.chosen_arm]
+
+    def feedback(self, reward: float):
+        last_rewards = np.array(self.last_rewards[self.chosen_arm])[::-1]
+
+        if len(last_rewards) == 0:
+            super(SimilarityUCBSelector, self).feedback(reward)
+            self.last_rewards[self.chosen_arm].append(reward)
+            return
+
+        if self.baseline == "max":
+            b = np.max(last_rewards)
+        elif self.baseline == "avg":
+            b = np.mean(last_rewards)
+        elif self.baseline == "davg":
+            gamma = self.heuristic_params["heuristic_gamma"]
+            b = np.sum(
+                last_rewards * gamma ** np.arange(1, len(last_rewards) + 1)
+            ) * (1.0 / gamma - 1.0)
+        elif self.baseline == "last":
+            b = last_rewards[0]
+        else:
+            b = 0.0
+        intrinsic_reward = reward - b
+        if self.op == "max-with-0":
+            intrinsic_reward = np.maximum(0.0, intrinsic_reward)
+        elif self.op == "abs":
+            intrinsic_reward = np.abs(intrinsic_reward)
+        elif self.op == "neg":
+            intrinsic_reward *= -1
+
+        similarities = self.similarity_matrix[self.chosen_arm]
+        for arm_j in range(self.n_contexts):
+            weight = similarities[arm_j]
+            if weight > 0:
+                weighted_intrinsic_reward = intrinsic_reward * weight
+                self.Q[arm_j] = (self.Q[arm_j] * self.N[arm_j] + weighted_intrinsic_reward) / (self.N[arm_j] + weight)
+                self.N[arm_j] += weight
+        self.total_N += np.sum(similarities)
+
+        super().feedback(reward)
+        self.last_rewards[self.chosen_arm].append(reward)
+
+
+class SimilaritySelector(TaskSelector):
+    def __init__(
+            self,
+            tasks: ArrayLike,
+            similarity_metric: Similarity,
+            inverse: bool=False,
+    ):
+        super().__init__(tasks)
+        self.n_contexts = tasks.shape[0]
+        self.similarity_matrix = similarity_metric.compute_matrix(tasks)
+
+        self.priority_scores = np.sum(self.similarity_matrix, axis=1)
+        self.sampling_probs = self.priority_scores / np.sum(self.priority_scores)
+        if inverse:
+            self.sampling_probs = 1 - self.sampling_probs
+
+    def select(self) -> int:
+        super().select()
+        selected = np.random.choice(
+            self.n_contexts,
+            p=self.sampling_probs
+        )
+        return self.tasks[selected]
 
     def feedback(self, reward: float):
         super().feedback(reward)
