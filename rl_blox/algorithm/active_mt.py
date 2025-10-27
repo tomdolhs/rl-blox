@@ -1,216 +1,19 @@
-import warnings
 from collections.abc import Callable
 
 import gymnasium as gym
 import numpy as np
-from numpy.typing import ArrayLike
 from tqdm.rich import tqdm
 
-from ..blox.mapb import DUCB
+from ..blox.multitask import (
+    DiscreteTaskSet,
+    DUCBGeneralized,
+    RoundRobinSelector,
+    TaskSelectionMixin,
+    TaskSelector,
+)
 from ..blox.replay_buffer import MultiTaskReplayBuffer
 from ..blox.similarity import Similarity
 from ..logging.logger import LoggerBase
-from .smt import ContextualMultiTaskDefinition
-
-
-class TaskSelector:
-    def __init__(self, tasks):
-        self.tasks = tasks
-        self.waiting_for_reward = False
-
-    def select(self):
-        assert (
-            not self.waiting_for_reward
-        ), "You have to provide a reward for the last target"
-        self.waiting_for_reward = True
-
-    def feedback(self, reward):
-        assert self.waiting_for_reward, "Cannot assign reward to any target"
-        self.waiting_for_reward = False
-
-
-class DUCBGeneralized(TaskSelector):
-    def __init__(
-        self,
-        tasks: ArrayLike,
-        upper_bound: float,
-        ducb_gamma: float,
-        zeta: float,
-        baseline: str | None,
-        op: str | None,
-        verbose: bool = False,
-        **kwargs,
-    ):
-        super().__init__(tasks)
-        self.baseline = baseline
-        self.op = op
-        self.verbose = verbose
-        self.heuristic_params = kwargs
-
-        self.n_contexts = tasks.shape[0]
-        self.ducb = DUCB(
-            n_arms=self.n_contexts,
-            upper_bound=upper_bound,
-            gamma=ducb_gamma,
-            zeta=zeta,
-        )
-        self.last_rewards = [[] for _ in range(self.n_contexts)]
-        self.chosen_arm = -1
-
-    def select(self) -> int:
-        super().select()
-        self.chosen_arm = self.ducb.choose_arm()
-        return self.tasks[self.chosen_arm]
-
-    def feedback(self, reward: float):
-        last_rewards = np.array(self.last_rewards[self.chosen_arm])[::-1]
-
-        if len(last_rewards) == 0:
-            self.ducb.chosen_arms = self.ducb.chosen_arms[:-1]
-        else:
-            if self.baseline == "max":
-                b = np.max(last_rewards)
-            elif self.baseline == "avg":
-                b = np.mean(last_rewards)
-            elif self.baseline == "davg":
-                gamma = self.heuristic_params["heuristic_gamma"]
-                b = np.sum(
-                    last_rewards * gamma ** np.arange(1, len(last_rewards) + 1)
-                ) * (1.0 / gamma - 1.0)
-            elif self.baseline == "last":
-                b = last_rewards[0]
-            else:
-                b = 0.0
-            intrinsic_reward = reward - b
-            if self.op == "max-with-0":
-                intrinsic_reward = np.maximum(0.0, intrinsic_reward)
-            elif self.op == "abs":
-                intrinsic_reward = np.abs(intrinsic_reward)
-            elif self.op == "neg":
-                intrinsic_reward *= -1
-            self.ducb.reward(intrinsic_reward)
-
-        super().feedback(reward)
-
-        self.last_rewards[self.chosen_arm].append(reward)
-
-
-class SimilarityUCBSelector(TaskSelector):
-    def __init__(
-            self,
-            tasks: ArrayLike,
-            similarity_metric: Similarity,
-            c: float,
-            baseline: str | None,
-            op: str | None,
-            verbose: bool = False,
-            **kwargs,
-    ):
-        super().__init__(tasks)
-        self.baseline = baseline
-        self.op = op
-        self.verbose = verbose
-        self.heuristic_params = kwargs
-        self.ucb_c = c
-        self.n_contexts = tasks.shape[0]
-        self.similarity_matrix = similarity_metric.compute_matrix(tasks)
-        self.N = np.full(self.n_contexts, 1e-6)
-        self.Q = np.zeros(self.n_contexts)
-        self.total_N = 0.0
-        self.last_rewards = [[] for _ in range(self.n_contexts)]
-        self.chosen_arm = -1
-
-    def select(self) -> int:
-        super().select()
-        log_total = np.log(self.total_N + 1)
-        exploration_term = self.ucb_c * np.sqrt(log_total / self.N)
-        ucb_scores = self.Q + exploration_term
-        self.chosen_arm = np.argmax(ucb_scores)
-        return self.tasks[self.chosen_arm]
-
-    def feedback(self, reward: float):
-        last_rewards = np.array(self.last_rewards[self.chosen_arm])[::-1]
-
-        if len(last_rewards) == 0:
-            super(SimilarityUCBSelector, self).feedback(reward)
-            self.last_rewards[self.chosen_arm].append(reward)
-            return
-
-        if self.baseline == "max":
-            b = np.max(last_rewards)
-        elif self.baseline == "avg":
-            b = np.mean(last_rewards)
-        elif self.baseline == "davg":
-            gamma = self.heuristic_params["heuristic_gamma"]
-            b = np.sum(
-                last_rewards * gamma ** np.arange(1, len(last_rewards) + 1)
-            ) * (1.0 / gamma - 1.0)
-        elif self.baseline == "last":
-            b = last_rewards[0]
-        else:
-            b = 0.0
-        intrinsic_reward = reward - b
-        if self.op == "max-with-0":
-            intrinsic_reward = np.maximum(0.0, intrinsic_reward)
-        elif self.op == "abs":
-            intrinsic_reward = np.abs(intrinsic_reward)
-        elif self.op == "neg":
-            intrinsic_reward *= -1
-
-        similarities = self.similarity_matrix[self.chosen_arm]
-        for arm_j in range(self.n_contexts):
-            weight = similarities[arm_j]
-            if weight > 0:
-                weighted_intrinsic_reward = intrinsic_reward * weight
-                self.Q[arm_j] = (self.Q[arm_j] * self.N[arm_j] + weighted_intrinsic_reward) / (self.N[arm_j] + weight)
-                self.N[arm_j] += weight
-        self.total_N += np.sum(similarities)
-
-        super().feedback(reward)
-        self.last_rewards[self.chosen_arm].append(reward)
-
-
-class SimilaritySelector(TaskSelector):
-    def __init__(
-            self,
-            tasks: ArrayLike,
-            similarity_metric: Similarity,
-            inverse: bool=False,
-    ):
-        super().__init__(tasks)
-        self.n_contexts = tasks.shape[0]
-        self.similarity_matrix = similarity_metric.compute_matrix(tasks)
-
-        self.priority_scores = np.sum(self.similarity_matrix, axis=1)
-        self.sampling_probs = self.priority_scores / np.sum(self.priority_scores)
-        if inverse:
-            self.sampling_probs = 1 - self.sampling_probs
-
-    def select(self) -> int:
-        super().select()
-        selected = np.random.choice(
-            self.n_contexts,
-            p=self.sampling_probs
-        )
-        return self.tasks[selected]
-
-    def feedback(self, reward: float):
-        super().feedback(reward)
-
-
-class RoundRobinSelector(TaskSelector):
-    def __init__(self, tasks, **kwargs):
-        super().__init__(tasks)
-        self.i = 0
-
-    def select(self) -> int:
-        super().select()
-        self.i += 1
-        return self.tasks[self.i % len(self.tasks)]
-
-    def feedback(self, reward: float):
-        super().feedback(reward)
-
 
 TASK_SELECTORS = {
     "Round Robin": (RoundRobinSelector, {}),
@@ -265,7 +68,7 @@ TASK_SELECTORS = {
 
 
 def train_active_mt(
-    mt_def: ContextualMultiTaskDefinition,
+    mt_def: DiscreteTaskSet,
     train_st: Callable,
     replay_buffer: MultiTaskReplayBuffer,
     r_max: float,
@@ -276,13 +79,14 @@ def train_active_mt(
     scheduling_interval: int = 1,
     learning_starts: int = 5_000,
     seed: int = 0,
+    task_selectables: list[TaskSelectionMixin] | None = None,
     logger: LoggerBase | None = None,
     progress_bar: bool = True,
 ) -> tuple:
     """Active Multi-Task Training.
 
     A multi-task extension of deep reinforcement learning similar to the method
-    proposeed by Fabisch and Metzen [1]_ for contextual policy search.
+    proposed by Fabisch and Metzen [1]_ for contextual policy search.
 
     Parameters
     ----------
@@ -341,6 +145,10 @@ def train_active_mt(
     seed : int
         Seed for random number generation.
 
+    task_selectables : list, optional
+        When a task is selected, these objects will be informed about the task
+        index.
+
     logger : LoggerBase, optional
         Experiment logger.
 
@@ -377,9 +185,7 @@ def train_active_mt(
             "zeta": xi,
         }
         hparams.update(selector_kwargs)
-        task_selector = selector_class(
-            tasks=np.arange(len(mt_def)), **hparams
-        )
+        task_selector = selector_class(tasks=np.arange(len(mt_def)), **hparams)
 
     while global_step < total_timesteps:
         task_id = task_selector.select()
@@ -391,6 +197,9 @@ def train_active_mt(
             env, buffer_length=scheduling_interval
         )
         replay_buffer.select_task(task_id)
+        if task_selectables is not None:
+            for ts in task_selectables:
+                ts.select_task(task_id)
 
         result_st = train_st(
             env=env_with_stats,

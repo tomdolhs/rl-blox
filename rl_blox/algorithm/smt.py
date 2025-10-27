@@ -1,95 +1,32 @@
 import copy
 import warnings
-from abc import ABCMeta, abstractmethod
 from collections import deque
 from collections.abc import Callable
 
 import gymnasium as gym
 import numpy as np
-from numpy.typing import ArrayLike
 from tqdm.rich import tqdm
 
+from ..blox.multitask import DiscreteTaskSet, TaskSelectionMixin
 from ..blox.replay_buffer import MultiTaskReplayBuffer
 from ..logging.logger import LoggerBase
 
 
-class ContextInObservationWrapper(gym.Wrapper, gym.utils.RecordConstructorArgs):
-    """Wrapper to add context to the observation of the environment."""
-
-    def __init__(self, env: gym.Env, context: ArrayLike):
-        gym.utils.RecordConstructorArgs.__init__(self, context=context)
-        gym.Wrapper.__init__(self, env)
-        self.context = context
-        self._observation_space = gym.spaces.Box(
-            low=np.concatenate(
-                (self.context, env.observation_space.low), axis=0
-            ),
-            high=np.concatenate(
-                (self.context, env.observation_space.high), axis=0
-            ),
-            dtype=env.observation_space.dtype,
-        )
-
-    def reset(self, **kwargs):
-        obs, info = self.env.reset(**kwargs)
-        return np.concatenate((self.context, obs), axis=0), info
-
-    def step(self, action):
-        obs, reward, terminated, truncated, info = self.env.step(action)
-        return (
-            np.concatenate((self.context, obs), axis=0),
-            reward,
-            terminated,
-            truncated,
-            info,
-        )
-
-
-class ContextualMultiTaskDefinition(metaclass=ABCMeta):
-    """Defines a multi-task environment."""
-
-    def __init__(self, contexts: ArrayLike, context_in_observation: bool):
-        self.contexts = contexts
-        self.context_in_observation = context_in_observation
-
-    def get_task(self, task_id: int) -> gym.Env:
-        """Returns the task environment for the given task ID."""
-        assert 0 <= task_id < len(self.contexts)
-        context = self.contexts[task_id]
-        st_env = self._get_env(context)
-        if self.context_in_observation:
-            return ContextInObservationWrapper(st_env, context=context)
-        else:
-            return st_env
-
-    @abstractmethod
-    def _get_env(self, context: ArrayLike) -> gym.Env:
-        """Returns the base environment without context."""
-
-    @abstractmethod
-    def get_solved_threshold(self, task_id: int) -> float:
-        """Performance threshold for a task to be considered solved (>=)."""
-
-    @abstractmethod
-    def get_unsolvable_threshold(self, task_id: int) -> float:
-        """Performance threshold for a task to be considered unsolvable (<=)."""
-
-    def __len__(self) -> int:
-        return len(self.contexts)
-
-
 def train_smt(
-    mt_def: ContextualMultiTaskDefinition,
+    mt_def: DiscreteTaskSet,
     train_st: Callable,
     replay_buffer: MultiTaskReplayBuffer,
     b1: int = 17_000_000,
     b2: int = 3_000_000,
+    solved_threshold: float = -100.0,
+    unsolvable_threshold: float = -1000.0,
     scheduling_interval: int = 1,
     kappa: float = 0.8,
     K: int = 3,
     n_average: int = 3,
     learning_starts: int = 5_000,
     seed: int = 0,
+    task_selectables: list[TaskSelectionMixin] | None = None,
     logger: LoggerBase | None = None,
     progress_bar: bool = True,
 ) -> tuple:
@@ -153,6 +90,10 @@ def train_smt(
     seed : int
         Seed for random number generation.
 
+    task_selectables : list, optional
+        When a task is selected, these objects will be informed about the task
+        index.
+
     logger : LoggerBase, optional
         Experiment logger.
 
@@ -199,7 +140,10 @@ def train_smt(
             mt_def,
             train_st,
             replay_buffer,
+            task_selectables,
             training_steps,
+            solved_threshold,
+            unsolvable_threshold,
             global_step,
             scheduling_interval,
             b1,
@@ -220,6 +164,7 @@ def train_smt(
             mt_def,
             train_st,
             replay_buffer,
+            task_selectables,
             unsolvable_pool,
             training_steps,
             global_step,
@@ -244,7 +189,10 @@ def smt_stage1(
     mt_def,
     train_st,
     replay_buffer,
+    task_selectables,
     training_steps,
+    solved_threshold,
+    unsolvable_threshold,
     global_step,
     scheduling_interval,
     b1,
@@ -274,6 +222,9 @@ def smt_stage1(
                 env, buffer_length=scheduling_interval
             )
             replay_buffer.select_task(task_id)
+            if task_selectables is not None:
+                for ts in task_selectables:
+                    ts.select_task(task_id)
 
             result_st = train_st(
                 env=env_with_stats,
@@ -323,13 +274,11 @@ def smt_stage1(
                     step=global_step,
                 )
 
-            M = mt_def.get_solved_threshold(task_id)
-            if avg_training_performances[task_id] >= M:
+            if avg_training_performances[task_id] >= solved_threshold:
                 solved_pool.add(task_id)
                 updated_training_pool.remove(task_id)
             elif training_steps[task_id] >= task_budgets[task_id]:
-                m = mt_def.get_unsolvable_threshold(task_id)
-                if avg_training_performances[task_id] <= m:
+                if avg_training_performances[task_id] <= unsolvable_threshold:
                     unsolvable_pool.add(task_id)
                     updated_training_pool.remove(task_id)
                 else:
@@ -389,6 +338,7 @@ def smt_stage2(
     mt_def,
     train_st,
     replay_buffer,
+    task_selectables,
     unsolvable_pool,
     training_steps,
     global_step,
@@ -404,6 +354,9 @@ def smt_stage2(
         for task_id in unsolvable_pool:
             env = mt_def.get_task(task_id)
             replay_buffer.select_task(task_id)
+            if task_selectables is not None:
+                for ts in task_selectables:
+                    ts.select_task(task_id)
 
             env_with_stats = gym.wrappers.RecordEpisodeStatistics(
                 env, buffer_length=scheduling_interval
