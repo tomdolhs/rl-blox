@@ -124,7 +124,7 @@ def kantorovich_distance(d: np.ndarray, p: np.ndarray = None, q: np.ndarray = No
         b_eq.append(q[j])
     A_eq, b_eq = np.array(A_eq), np.array(b_eq)
     res = linprog(c, A_eq=A_eq, b_eq=b_eq, bounds=(0, None), method="highs")
-    return res.fun
+    return res.fun if res.fun is not None else 0
 
 
 def expected_rewards(P, R):
@@ -202,6 +202,8 @@ class BisimulationSimilarity(Similarity):
                     for a in range(n_actions):
                         reward_diff = abs(expected_R_i[i, a] - expected_R_j[j, a])
                         trans_diff = kantorovich_distance(d, P_i[i, a], P_j[j, a])
+                        if trans_diff is None:
+                            continue
                         vals.append((1 - self.c) * reward_diff + self.c * trans_diff)
                     d_new[i, j] = max(vals)
             if np.max(np.abs(d_new - d)) < self.tol:

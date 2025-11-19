@@ -9,6 +9,7 @@ from numpy.typing import ArrayLike
 
 from .similarity import Similarity
 from ..blox.mapb import DUCB
+from ..logging.logger import AIMLogger
 
 
 class TaskSelectionMixin:
@@ -46,13 +47,23 @@ class DiscreteTaskSet:
 
         context_high = np.max(contexts, axis=0).ravel()
         context_low = np.min(contexts, axis=0).ravel()
+        space = base_env.observation_space
+        if isinstance(space, gym.spaces.box.Box):
+            env_low = np.ravel(space.low)
+            env_high = np.ravel(space.high)
+        elif isinstance(space, gym.spaces.discrete.Discrete):
+            n = int(space.n)
+            env_low = np.zeros(n, dtype=float)
+            env_high = np.ones(n, dtype=float)
+        else:
+            raise TypeError(f"Unsupported observation space: {type(space)}")
         self.contextual_obs_space = gym.spaces.Box(
             low=np.concatenate(
-                (context_low, self.base_env.observation_space.low),
+                (context_low, env_low),
                 axis=0,
             ),
             high=np.concatenate(
-                (context_high, self.base_env.observation_space.high),
+                (context_high, env_high),
                 axis=0,
             ),
             dtype=self.base_env.observation_space.dtype,
@@ -83,15 +94,18 @@ class DiscreteTaskSet:
 
 
 class TaskSelector:
-    def __init__(self, tasks):
+    def __init__(self, tasks, logger: AIMLogger | None=None):
         self.tasks = tasks
         self.waiting_for_reward = False
+        self.logger = logger
+        self.count = 0
 
     def select(self) -> int:
         assert (
             not self.waiting_for_reward
         ), "You have to provide a reward for the last target"
         self.waiting_for_reward = True
+        self.count += 1
         return 0
 
     def feedback(self, reward: float):
@@ -130,7 +144,7 @@ class DUCBGeneralized(TaskSelector):
     def select(self) -> int:
         super().select()
         self.chosen_arm = self.ducb.choose_arm()
-        return self.tasks[self.chosen_arm]
+        return self.chosen_arm
 
     def feedback(self, reward: float):
         last_rewards = np.array(self.last_rewards[self.chosen_arm])[::-1]
@@ -173,7 +187,7 @@ class RoundRobinSelector(TaskSelector):
     def select(self) -> int:
         super().select()
         self.i += 1
-        return self.tasks[self.i % len(self.tasks)]
+        return self.i % len(self.tasks)
 
     def feedback(self, reward: float):
         super().feedback(reward)
@@ -210,7 +224,7 @@ class SimilarityUCBSelector(TaskSelector):
         exploration_term = self.ucb_c * np.sqrt(log_total / self.N)
         ucb_scores = self.Q + exploration_term
         self.chosen_arm = np.argmax(ucb_scores)
-        return self.tasks[self.chosen_arm]
+        return self.chosen_arm
 
     def feedback(self, reward: float):
         last_rewards = np.array(self.last_rewards[self.chosen_arm])[::-1]
@@ -259,16 +273,19 @@ class SimilaritySelector(TaskSelector):
             self,
             tasks: ArrayLike,
             similarity_metric: Similarity,
-            inverse: bool=False,
+            inverse: bool,
+            logger: AIMLogger,
+            **kwargs,
     ):
-        super().__init__(tasks)
+        super().__init__(tasks, logger)
         self.n_contexts = tasks.shape[0]
         self.similarity_matrix = similarity_metric.compute_matrix(tasks)
 
         self.priority_scores = np.sum(self.similarity_matrix, axis=1)
         self.sampling_probs = self.priority_scores / np.sum(self.priority_scores)
         if inverse:
-            self.sampling_probs = 1 - self.sampling_probs
+            self.sampling_probs = 1.0 - self.sampling_probs
+            self.sampling_probs /= np.sum(self.sampling_probs)
 
     def select(self) -> int:
         super().select()
@@ -276,7 +293,9 @@ class SimilaritySelector(TaskSelector):
             self.n_contexts,
             p=self.sampling_probs
         )
-        return self.tasks[selected]
+        for task_idx in range(self.n_contexts):
+            self.logger.record_stat(f'Task_{task_idx}_Prob', float(self.sampling_probs[task_idx]))
+        return selected
 
     def feedback(self, reward: float):
         super().feedback(reward)

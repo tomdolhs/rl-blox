@@ -1,3 +1,4 @@
+import copy
 from collections.abc import Callable
 
 import gymnasium as gym
@@ -16,59 +17,6 @@ from ..blox.multitask import (
 from ..blox.replay_buffer import MultiTaskReplayBuffer
 from ..blox.similarity import BisimulationSimilarity
 from ..logging.logger import LoggerBase
-
-TASK_SELECTORS = {
-    "Round Robin": (RoundRobinSelector, {}),
-    "1-step Progress": (
-        DUCBGeneralized,
-        {
-            "baseline": "last",
-            "op": None,
-        },
-    ),
-    "Monotonic Progress": (
-        DUCBGeneralized,
-        {
-            "baseline": "max",
-            "op": "max-with-0",
-        },
-    ),
-    "Best Reward": (
-        DUCBGeneralized,
-        {
-            "baseline": None,
-            "op": None,
-        },
-    ),
-    "Diversity": (
-        DUCBGeneralized,
-        {
-            "baseline": None,
-            "op": "neg",
-        },
-    ),
-    "Similarity": (
-        SimilaritySelector,
-        {
-            "inverse": False,
-        },
-    ),
-    "Dissimilarity": (
-        SimilaritySelector,
-        {
-            "similarity_metric": BisimulationSimilarity(),
-            "inverse": True,
-        },
-    ),
-    "Similarity UCB": (
-        SimilarityUCBSelector,
-        {
-            "baseline": None,
-            "op": "neg",
-        },
-    ),
-}
-
 
 def train_active_mt(
     mt_def: DiscreteTaskSet,
@@ -172,9 +120,66 @@ def train_active_mt(
        Journal of Machine Learning Research, 15(97), 3371-3399.
        https://jmlr.org/papers/v15/fabisch14a.html
     """
+    TASK_SELECTORS = {
+        "Round Robin": (RoundRobinSelector, {}),
+        "1-step Progress": (
+            DUCBGeneralized,
+            {
+                "baseline": "last",
+                "op": None,
+            },
+        ),
+        "Monotonic Progress": (
+            DUCBGeneralized,
+            {
+                "baseline": "max",
+                "op": "max-with-0",
+            },
+        ),
+        "Best Reward": (
+            DUCBGeneralized,
+            {
+                "baseline": None,
+                "op": None,
+            },
+        ),
+        "Diversity": (
+            DUCBGeneralized,
+            {
+                "baseline": None,
+                "op": "neg",
+            },
+        ),
+        "Similarity": (
+            SimilaritySelector,
+            {
+                "similarity_metric": BisimulationSimilarity(),
+                "inverse": False,
+            },
+        ),
+        "Dissimilarity": (
+            SimilaritySelector,
+            {
+                "similarity_metric": BisimulationSimilarity(),
+                "inverse": True,
+                "logger": logger
+            },
+        ),
+        "Similarity UCB": (
+            SimilarityUCBSelector,
+            {
+                "similarity_metric": BisimulationSimilarity(),
+                "c": 1.0,
+                "baseline": None,
+                "op": "neg",
+            },
+        ),
+    }
+
     global_step = 0
     training_steps = np.zeros(len(mt_def), dtype=int)
     progress = tqdm(total=total_timesteps, disable=not progress_bar)
+    returns_per_task = [[] for _ in range(len(mt_def))]
 
     if isinstance(task_selector, str):
         assert task_selector in TASK_SELECTORS, (
@@ -188,7 +193,8 @@ def train_active_mt(
             "zeta": xi,
         }
         hparams.update(selector_kwargs)
-        task_selector = selector_class(tasks=np.arange(len(mt_def)), **hparams)
+        tasks = [copy.deepcopy(mt_def.get_task(i)) for i in range(len(mt_def))]
+        task_selector = selector_class(tasks=np.array(tasks), **hparams)
 
     while global_step < total_timesteps:
         task_id = task_selector.select()
@@ -225,6 +231,10 @@ def train_active_mt(
 
         assert len(env_with_stats.return_queue) > 0
         mean_return = np.mean(env_with_stats.return_queue)
+        if logger is not None:
+            returns_per_task[task_id].append(mean_return)
+            logger.record_stat(f"mean return task {task_id}", np.mean(returns_per_task[task_id]), step=global_step)
+            logger.record_stat(f"counter task {task_id}", len(returns_per_task[task_id]), step=global_step)
         task_selector.feedback(mean_return)
 
         steps = sum(env_with_stats.length_queue)
