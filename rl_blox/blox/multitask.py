@@ -275,13 +275,14 @@ class SimilaritySelector(TaskSelector):
             similarity_metric: Similarity,
             inverse: bool,
             logger: AIMLogger,
+            gamma: float = 10,
             **kwargs,
     ):
         super().__init__(tasks, logger)
         self.n_contexts = tasks.shape[0]
         self.similarity_matrix = similarity_metric.compute_matrix(tasks)
 
-        self.priority_scores = np.sum(self.similarity_matrix, axis=1)
+        self.priority_scores = np.sum(self.similarity_matrix, axis=1) ** gamma
         self.sampling_probs = self.priority_scores / np.sum(self.priority_scores)
         if inverse:
             self.sampling_probs = 1.0 - self.sampling_probs

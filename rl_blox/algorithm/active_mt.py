@@ -24,6 +24,7 @@ def train_active_mt(
     replay_buffer: MultiTaskReplayBuffer,
     r_max: float,
     ducb_gamma: float = 0.95,
+    similarity_gamma: float = 1.0,
     xi: float = 0.002,
     task_selector: TaskSelector | str = "Monotonic Progress",
     total_timesteps: int = 1_000_000,
@@ -155,6 +156,8 @@ def train_active_mt(
             {
                 "similarity_metric": BisimulationSimilarity(),
                 "inverse": False,
+                "gamma": similarity_gamma,
+                "logger": logger
             },
         ),
         "Dissimilarity": (
@@ -162,6 +165,7 @@ def train_active_mt(
             {
                 "similarity_metric": BisimulationSimilarity(),
                 "inverse": True,
+                "gamma": similarity_gamma,
                 "logger": logger
             },
         ),

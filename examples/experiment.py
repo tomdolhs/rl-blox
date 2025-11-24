@@ -34,7 +34,6 @@ class OneHotObsWrapper(ObservationWrapper):
 def run_experiment(config: dict):
     print(f"Start experiment: {config['name']}")
 
-    # 1. Extract Params
     seed = config.get("seed", 42)
     env_name = config.get("env_name", "FrozenLake-v1")
     map_probs = config.get("map_probs", [0.9, 0.7, 0.5, 0.3])
@@ -42,11 +41,9 @@ def run_experiment(config: dict):
     task_selector = config.get("task_selector", "Dissimilarity")
     total_timesteps = config.get("total_timesteps", 100_000)
 
-    # Logger Setup
     logger = AIMLogger()
     logger.define_experiment(env_name=env_name, algorithm_name=f"AMT-{backbone}-{task_selector}", hparams=config)
 
-    # 2. Environments & Task Set Setup
     maps = [generate_random_map(size=4, p=prob, seed=seed) for prob in map_probs]
 
     base_env = gym.make(env_name, is_slippery=False)
@@ -68,7 +65,6 @@ def run_experiment(config: dict):
     optimizer = nnx.Optimizer(q_net, optax.adam(0.003), wrt=nnx.Param)
     train_st = partial(train_ddqn, q_net=q_net, optimizer=optimizer, q_target_net=q_target_net)
 
-    # 4. Training starten
     result = train_active_mt(
         train_set,
         train_st,
@@ -76,6 +72,7 @@ def run_experiment(config: dict):
         task_selector=task_selector,
         r_max=config.get("r_max", 1.0),
         ducb_gamma=config.get("ducb_gamma", 0.95),
+        similarity_gamma=config.get("similarity_gamma", 0.99),
         xi=config.get("xi", 1e-5),
         learning_starts=config.get("learning_starts", 0),
         scheduling_interval=config.get("scheduling_interval", 5),
@@ -93,18 +90,11 @@ if __name__ == "__main__":
 
     experiment_configs = [
         {
-            "name": "Round_Robin",
-            "seed": 1,
-            "backbone": "DDQN",
-            "task_selector": "Round Robin",
-            "map_probs": [0.9, 0.7, 0.5, 0.3],
-            "total_timesteps": 10_000
-        },
-        {
             "name": "Dissimilarity",
             "seed": 1,
             "backbone": "DDQN",
             "task_selector": "Dissimilarity",
+            "similarity_gamma": 10.0,
             "map_probs": [0.9, 0.7, 0.5, 0.3],
             "total_timesteps": 10_000
         },
@@ -113,9 +103,18 @@ if __name__ == "__main__":
             "seed": 3,
             "backbone": "DDQN",
             "task_selector": "Dissimilarity",
+            "similarity_gamma": 10.0,
             "map_probs": [0.4, 0.3, 0.2, 0.1],
             "total_timesteps": 10_000
-        }
+        },
+        {
+            "name": "Round_Robin",
+            "seed": 1,
+            "backbone": "DDQN",
+            "task_selector": "Round Robin",
+            "map_probs": [0.9, 0.7, 0.5, 0.3],
+            "total_timesteps": 10_000
+        },
     ]
 
     print(f"Start experiments: {', '.join([cfg['name'] for cfg in experiment_configs])}")

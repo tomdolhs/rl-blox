@@ -151,7 +151,7 @@ class BisimulationSimilarity(Similarity):
     Computes the bisimulation similarity between two environments.
     """
 
-    def __init__(self, c=0.5, tol=1e-6, max_iter=1000):
+    def __init__(self, c=0.9, tol=1e-6, max_iter=1000):
         """
         Params
         ------
@@ -204,7 +204,8 @@ class BisimulationSimilarity(Similarity):
                         trans_diff = kantorovich_distance(d, P_i[i, a], P_j[j, a])
                         if trans_diff is None:
                             continue
-                        vals.append((1 - self.c) * reward_diff + self.c * trans_diff)
+                        diff = reward_diff + self.c * trans_diff
+                        vals.append(diff)
                     d_new[i, j] = max(vals)
             if np.max(np.abs(d_new - d)) < self.tol:
                 return d_new
@@ -555,12 +556,30 @@ class RewardSimilarity(Similarity):
 
 
 if __name__ == "__main__":
-    env1 = gym.make("FrozenLake-v1", is_slippery=True, map_name="4x4")
-    env2 = gym.make("FrozenLake-v1", is_slippery=True, map_name="4x4")
+    maps = [
+        ['SFFF',
+         'FFFF',
+         'FFFF',
+         'FFFG'],
+        ['SFFF',
+         'HFFH',
+         'HHFF',
+         'FHFG'],
+        ['SFFH',
+         'HHFF',
+         'HFHF',
+         'HHHG'],
+        ['SHHH',
+         'HHHH',
+         'HHHH',
+         'HHHG']
+    ]
+    env1 = gym.make("FrozenLake-v1", is_slippery=False, desc=maps[0])
+    env2 = gym.make("FrozenLake-v1", is_slippery=False, desc=maps[3])
 
     print("--- Bisimulation Similarity ---")
-    bisim_sim = BisimulationSimilarity(c=0.5, max_iter=10)
-    dist = bisim_sim.compute(env1, env2)
+    bisim_sim = BisimulationSimilarity(c=0.9, max_iter=1000)
+    dist = bisim_sim.compute(env1, env1)
     print("Bisimulation distance:", dist)
 
     print("\n--- Compliance Similarity ---")
