@@ -227,7 +227,6 @@ def train_active_mt(
         )
 
         if len(env_with_stats.return_queue) != scheduling_interval:
-            # limit total_timesteps reached
             unlogged_steps = total_timesteps - global_step
             training_steps[task_id] += unlogged_steps
             progress.update(unlogged_steps)
