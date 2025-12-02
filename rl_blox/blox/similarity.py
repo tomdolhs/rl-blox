@@ -15,24 +15,35 @@ class Similarity(ABC):
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-    def _generate_cache_key(self, env1, env2, **kwargs):
-        """Generates a unique key for caching based on envs and metric params."""
-        # Extract descriptions from environments
+    def _generate_cache_key(self, env1, env2, **kwargs) -> str:
+        """
+        Generates a unique cache key for the similarity computation.
+
+        Params
+        ----------
+        env1: gym.Env
+            The first environment.
+        env2: gym.Env
+            The second environment.
+        kwargs
+            Additional arguments for the similarity metric.
+
+        Returns
+        -------
+        str
+            A unique cache key.
+        """
         desc1 = "".join(["".join(row) for row in env1.unwrapped.desc.astype(str)])
         desc2 = "".join(["".join(row) for row in env2.unwrapped.desc.astype(str)])
-
-        # Get similarity-specific parameters
         params = self.__dict__.copy()
         params.pop('cache_dir', None)  # Don't include cache_dir in the key
         params.update(kwargs)
-
-        # Create a string representation
+        file_mod_time = Path(__file__).stat().st_mtime
         key_string = (
             f"{self.__class__.__name__}-{desc1}-{desc2}-"
+            f"{file_mod_time}-"
             f"{json.dumps(params, sort_keys=True)}"
         )
-
-        # Hash the string to create a unique and valid filename
         hash = hashlib.sha256(key_string.encode()).hexdigest() + ".npy"
         return hash
 
