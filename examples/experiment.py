@@ -102,7 +102,7 @@ if __name__ == "__main__":
             "name": "Similarity",
             "seed": 1,
             "backbone": "DDQN",
-            "task_selector": "Dissimilarity",
+            "task_selector": "Similarity",
             "temperature": 0.25,
             "map_probs": [0.9, 0.7, 0.5, 0.3],
             "total_timesteps": 10_000

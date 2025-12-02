@@ -3,15 +3,42 @@ import gymnasium as gym
 from scipy.optimize import linprog
 from collections import namedtuple
 from abc import ABC, abstractmethod
+import hashlib
+import json
+from pathlib import Path
 
 
 class Similarity(ABC):
     """Base class for similarity metrics."""
 
-    @abstractmethod
+    def __init__(self, cache_dir=".cache"):
+        self.cache_dir = Path(cache_dir)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def _generate_cache_key(self, env1, env2, **kwargs):
+        """Generates a unique key for caching based on envs and metric params."""
+        # Extract descriptions from environments
+        desc1 = "".join(["".join(row) for row in env1.unwrapped.desc.astype(str)])
+        desc2 = "".join(["".join(row) for row in env2.unwrapped.desc.astype(str)])
+
+        # Get similarity-specific parameters
+        params = self.__dict__.copy()
+        params.pop('cache_dir', None)  # Don't include cache_dir in the key
+        params.update(kwargs)
+
+        # Create a string representation
+        key_string = (
+            f"{self.__class__.__name__}-{desc1}-{desc2}-"
+            f"{json.dumps(params, sort_keys=True)}"
+        )
+
+        # Hash the string to create a unique and valid filename
+        hash = hashlib.sha256(key_string.encode()).hexdigest() + ".npy"
+        return hash
+
     def compute(self, env1, env2, **kwargs):
         """
-        Computes the similarity/distance between two environments.
+        Computes the similarity/distance between two environments, using a cache.
 
         Params
         ------
@@ -26,6 +53,22 @@ class Similarity(ABC):
         -------
         float
             A measure of similarity or distance.
+        """
+        cache_key = self._generate_cache_key(env1, env2, **kwargs)
+        cache_file = self.cache_dir / cache_key
+
+        if cache_file.exists():
+            return np.load(cache_file).item()
+        else:
+            result = self._compute(env1, env2, **kwargs)
+            np.save(cache_file, np.array(result))
+            return result
+
+    @abstractmethod
+    def _compute(self, env1, env2, **kwargs):
+        """
+        The actual computation logic for the similarity/distance.
+        This method must be implemented by subclasses.
         """
         pass
 
@@ -151,7 +194,7 @@ class BisimulationSimilarity(Similarity):
     Computes the bisimulation similarity between two environments.
     """
 
-    def __init__(self, c=0.99, tol=1e-3, max_iter=25):
+    def __init__(self, c=0.99, tol=1e-3, max_iter=25, **kwargs):
         """
         Params
         ------
@@ -162,11 +205,12 @@ class BisimulationSimilarity(Similarity):
         max_iter: int
             Maximum number of iterations.
         """
+        super().__init__(**kwargs)
         self.c = c
         self.tol = tol
         self.max_iter = max_iter
 
-    def compute(self, env1, env2):
+    def _compute(self, env1, env2, **kwargs):
         """
         Computes the bisimulation similarity between two environments.
 
@@ -205,7 +249,7 @@ class BisimulationSimilarity(Similarity):
                         if trans_diff is None:
                             continue
                         vals.append(reward_diff + self.c * trans_diff)
-                    d_new[i, j] = max(vals)
+                    d_new[i, j] = max(vals) if vals else 0
             if np.max(np.abs(d_new - d)) < self.tol:
                 return d_new
             d = d_new
@@ -252,7 +296,7 @@ class ComplianceSimilarity(Similarity):
     Computes the compliance similarity between two environments.
     """
 
-    def __init__(self, n_samples=1000, policy=None):
+    def __init__(self, n_samples=1000, policy=None, **kwargs):
         """
         Params
         ------
@@ -262,10 +306,11 @@ class ComplianceSimilarity(Similarity):
             A function that takes an observation as input and returns an action.
             If None, a random policy is used.
         """
+        super().__init__(**kwargs)
         self.n_samples = n_samples
         self.policy = policy
 
-    def compute(self, env1, env2):
+    def _compute(self, env1, env2, **kwargs):
         """
         Computes the compliance similarity between two environments.
 
@@ -293,7 +338,7 @@ class ComplianceSimilarity(Similarity):
             trans_prob = P_source[s, a, s_next]
             reward_prob = 1.0 if np.isclose(R_source[s, a, s_next], r) else 0.0
             probs.append(trans_prob * reward_prob)
-        compliance = np.mean(probs)
+        compliance = np.mean(probs) if probs else 0.0
         return compliance
 
 
@@ -365,7 +410,7 @@ class GraphSimilarity(Similarity):
     Computes the graph similarity between two environments.
     """
 
-    def __init__(self, CS=0.9, CA=0.9, max_iter=50, tol=1e-4):
+    def __init__(self, CS=0.9, CA=0.9, max_iter=50, tol=1e-4, **kwargs):
         """
         Params
         ------
@@ -378,12 +423,13 @@ class GraphSimilarity(Similarity):
         tol: float
             Tolerance for convergence.
         """
+        super().__init__(**kwargs)
         self.CS = CS
         self.CA = CA
         self.max_iter = max_iter
         self.tol = tol
 
-    def compute(self, env1, env2):
+    def _compute(self, env1, env2, **kwargs):
         """
         Computes the graph similarity between two environments.
 
@@ -444,7 +490,7 @@ class HomomorphismSimilarity(Similarity):
     Computes the homomorphism similarity between two environments.
     """
 
-    def __init__(self, c=0.5, tol=1e-6, max_iter=1000):
+    def __init__(self, c=0.5, tol=1e-6, max_iter=1000, **kwargs):
         """
         Params
         ------
@@ -455,11 +501,12 @@ class HomomorphismSimilarity(Similarity):
         max_iter: int
             Maximum number of iterations.
         """
+        super().__init__(**kwargs)
         self.c = c
         self.tol = tol
         self.max_iter = max_iter
 
-    def compute(self, env1, env2):
+    def _compute(self, env1, env2, **kwargs):
         """
         Computes the homomorphism similarity between two environments.
 
@@ -499,7 +546,7 @@ class HomomorphismSimilarity(Similarity):
                             reward_diff = abs(expected_R_i[i, a_i] - expected_R_j[j, a_j])
                             trans_diff = kantorovich_distance(d, P_i[i, a_i], P_j[j, a_j])
                             vals.append((1 - self.c) * reward_diff + self.c * trans_diff)
-                        max_i = max(max_i, min(vals))
+                        max_i = max(max_i, min(vals) if vals else 0)
 
                     max_j = 0.0
                     for a_j in range(n_j_actions):
@@ -508,7 +555,7 @@ class HomomorphismSimilarity(Similarity):
                             reward_diff = abs(expected_R_i[i, a_i] - expected_R_j[j, a_j])
                             trans_diff = kantorovich_distance(d, P_i[i, a_i], P_j[j, a_j])
                             vals.append((1 - self.c) * reward_diff + self.c * trans_diff)
-                        max_j = max(max_j, min(vals))
+                        max_j = max(max_j, min(vals) if vals else 0)
 
                     d_new[i, j] = max(max_i, max_j)
 
@@ -523,7 +570,10 @@ class RewardSimilarity(Similarity):
     Computes the reward similarity between two environments.
     """
 
-    def compute(self, env1, env2):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+    def _compute(self, env1, env2, **kwargs):
         """
         Computes the reward similarity between two environments.
 
@@ -555,6 +605,7 @@ class RewardSimilarity(Similarity):
 
 
 if __name__ == "__main__":
+    # I have corrected the `maps` list structure for it to be valid Python.
     maps = [
         ['SFFF',
          'FFFF',
@@ -580,6 +631,7 @@ if __name__ == "__main__":
     bisim_sim = BisimulationSimilarity(c=0.99, max_iter=25)
     dist = bisim_sim.compute(env1, env2)
     print("Bisimulation distance:", dist)
+
 
     print("\n--- Compliance Similarity ---")
     comp_sim = ComplianceSimilarity(n_samples=500)
