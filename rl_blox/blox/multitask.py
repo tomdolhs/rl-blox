@@ -6,6 +6,7 @@ import jax.numpy as jnp
 import numpy as np
 from gymnasium.wrappers import TransformObservation
 from numpy.typing import ArrayLike
+from scipy.special import softmax
 
 from .similarity import Similarity
 from ..blox.mapb import DUCB
@@ -275,18 +276,16 @@ class SimilaritySelector(TaskSelector):
             similarity_metric: Similarity,
             inverse: bool,
             logger: AIMLogger,
-            gamma: float = 10,
+            temperature: float = 0.25,
             **kwargs,
     ):
         super().__init__(tasks, logger)
         self.n_contexts = tasks.shape[0]
         self.similarity_matrix = similarity_metric.compute_matrix(tasks)
-
-        self.priority_scores = np.sum(self.similarity_matrix, axis=1) ** gamma
-        self.sampling_probs = self.priority_scores / np.sum(self.priority_scores)
+        self.sampling_probs = softmax(np.sum(self.similarity_matrix, axis=1) / temperature)
         if inverse:
             self.sampling_probs = 1.0 - self.sampling_probs
-            self.sampling_probs /= np.sum(self.sampling_probs)
+        self.sampling_probs /= np.sum(self.sampling_probs)
 
     def select(self) -> int:
         super().select()

@@ -151,7 +151,7 @@ class BisimulationSimilarity(Similarity):
     Computes the bisimulation similarity between two environments.
     """
 
-    def __init__(self, c=0.9, tol=1e-3, max_iter=1000):
+    def __init__(self, c=0.99, tol=1e-3, max_iter=25):
         """
         Params
         ------

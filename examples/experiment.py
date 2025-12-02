@@ -72,14 +72,14 @@ def run_experiment(config: dict):
         task_selector=task_selector,
         r_max=config.get("r_max", 1.0),
         ducb_gamma=config.get("ducb_gamma", 0.95),
-        similarity_gamma=config.get("similarity_gamma", 0.99),
+        temperature=config.get("similarity_gamma", 0.99),
         xi=config.get("xi", 1e-5),
         learning_starts=config.get("learning_starts", 0),
         scheduling_interval=config.get("scheduling_interval", 5),
         total_timesteps=total_timesteps,
         logger=logger,
         seed=seed,
-        progress_bar=False,
+        progress_bar=True,
     )
 
     print(f"Experiment {config['name']} completed")
@@ -94,17 +94,25 @@ if __name__ == "__main__":
             "seed": 1,
             "backbone": "DDQN",
             "task_selector": "Dissimilarity",
-            "similarity_gamma": 10.0,
+            "temperature": 0.25,
             "map_probs": [0.9, 0.7, 0.5, 0.3],
             "total_timesteps": 10_000
         },
         {
-            "name": "Dissimilarity_Harder",
-            "seed": 3,
+            "name": "Similarity",
+            "seed": 1,
             "backbone": "DDQN",
             "task_selector": "Dissimilarity",
-            "similarity_gamma": 10.0,
-            "map_probs": [0.4, 0.3, 0.2, 0.1],
+            "temperature": 0.25,
+            "map_probs": [0.9, 0.7, 0.5, 0.3],
+            "total_timesteps": 10_000
+        },
+        {
+            "name": "SimularityUCB",
+            "seed": 1,
+            "backbone": "DDQN",
+            "task_selector": "Similarity UCB",
+            "map_probs": [0.9, 0.7, 0.5, 0.3],
             "total_timesteps": 10_000
         },
         {
