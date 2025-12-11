@@ -22,6 +22,7 @@ A simple demo is provided when run as __main__.
 import time
 import numpy as np
 import gymnasium as gym
+import ot
 from scipy.optimize import linprog
 from collections import namedtuple
 from abc import ABC, abstractmethod
@@ -38,7 +39,7 @@ class Similarity(ABC):
     This base class provides caching of computed results.
     """
 
-    def __init__(self, cache_dir=".cache"):
+    def __init__(self, cache_dir: str = ".cache"):
         """Create a similarity measure with an optional cache directory.
 
         Args:
@@ -47,11 +48,13 @@ class Similarity(ABC):
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-    def _generate_cache_key(self, env1, env2, **kwargs) -> str:
+    def _generate_cache_key(self, env1: gym.Env, env2: gym.Env, **kwargs) -> str:
         """Generate a deterministic cache key for a pair of environments.
 
         The key is derived from environment grid descriptions, file
         modification time and the instance parameters (except cache_dir).
+
+        Todo: Make cache keys robust: hash model matrices (P/R) rather than relying on env.desc; handle envs without .desc.
 
         Returns:
             A filename-safe hash string ending with '.npy'.
@@ -72,7 +75,7 @@ class Similarity(ABC):
         hash = hashlib.sha256(key_string.encode()).hexdigest() + ".npy"
         return hash
 
-    def compute(self, env1, env2, **kwargs):
+    def compute(self, env1: gym.Env, env2: gym.Env, **kwargs):
         """Compute the similarity/distance between env1 and env2.
 
         Results will be loaded from cache if available; otherwise `_compute`
@@ -92,14 +95,14 @@ class Similarity(ABC):
             return result
 
     @abstractmethod
-    def _compute(self, env1, env2, **kwargs):
+    def _compute(self, env1: gym.Env, env2: gym.Env, **kwargs):
         """Subclass-implemented computation for similarity/distance.
 
         Must return a numeric value representing similarity/distance.
         """
         pass
 
-    def compute_matrix(self, envs, **kwargs):
+    def compute_matrix(self, envs: list[gym.Env], **kwargs):
         """Compute symmetric matrix of pairwise similarities.
 
         Args:
@@ -142,7 +145,7 @@ def get_model(env: gym.Env):
     return P, R
 
 
-def expected_rewards(P, R):
+def expected_rewards(P: np.ndarray, R: np.ndarray):
     """Compute expected reward for each state-action pair.
 
     Args:
@@ -185,7 +188,7 @@ def kantorovich_distance(d: np.ndarray, p: np.ndarray = None, q: np.ndarray = No
         b_eq.append(q[j])
     A_eq, b_eq = np.array(A_eq), np.array(b_eq)
     res = linprog(c, A_eq=A_eq, b_eq=b_eq, bounds=(0, None), method="highs")
-    return res.fun if res.fun is not None else 0
+    return res.fun if res.fun is not None else 0  # Todo: handle infeasibility
 
 
 def hausdorff_distance(dA: np.ndarray, Nu: list[int], Nv: list[int]) -> float:
@@ -206,7 +209,7 @@ def hausdorff_distance(dA: np.ndarray, Nu: list[int], Nv: list[int]) -> float:
     return max(max(dA_a_Nv), max(dA_b_Nu))
 
 
-def collect_experiences(env, n_samples=1000, policy=None):
+def collect_experiences(env: gym.Env, n_samples: int = 1000, policy: callable = None):
     """Collect transitions by rolling out an environment.
 
     Args:
@@ -240,7 +243,7 @@ class BisimulationSimilarity(Similarity):
     based on reward differences and the Kantorovich distance over transitions.
     """
 
-    def __init__(self, c=0.99, tol=1e-3, max_iter=25, **kwargs):
+    def __init__(self, c: float = 0.99, tol: float = 1e-3, max_iter: int = 25, **kwargs):
         """Initialize the bisimulation similarity.
 
         Args:
@@ -253,7 +256,7 @@ class BisimulationSimilarity(Similarity):
         self.tol = tol
         self.max_iter = max_iter
 
-    def _compute(self, env1, env2, **kwargs):
+    def _compute(self, env1: gym.Env, env2: gym.Env, **kwargs):
         """Compute the bisimulation distance (returns transformed value).
 
         Returns:
@@ -262,9 +265,10 @@ class BisimulationSimilarity(Similarity):
         P1, R1 = get_model(env1.unwrapped)
         P2, R2 = get_model(env2.unwrapped)
         d_matrix = self._bisimulation_distance(R1, R2, P1, P2)
-        return 1 - kantorovich_distance(d_matrix)
+        return 1 - ot.emd2(np.ones(d_matrix.shape[0]) / d_matrix.shape[0],
+                           np.ones(d_matrix.shape[1]) / d_matrix.shape[1], d_matrix)
 
-    def _bisimulation_distance(self, R_i, R_j, P_i, P_j):
+    def _bisimulation_distance(self, R_i: np.ndarray, R_j: np.ndarray, P_i: np.ndarray, P_j: np.ndarray):
         """Compute the bisimulation distance matrix between MDPs.
 
         Iteratively refines a matrix of state-to-state distances until convergence.
@@ -274,27 +278,25 @@ class BisimulationSimilarity(Similarity):
             P_i, P_j: transition tensor for the two MDPs.
 
         Returns:
-            A distance matrix (n_i_states x n_j_states).
+            A distance matrix (n_i x n_j).
         """
-        n_i_states, n_actions, _ = R_i.shape
-        n_j_states = R_j.shape[0]
-        expected_R_i, expected_R_j = expected_rewards(
-            P_i, R_i), expected_rewards(P_j, R_j)
-        d = np.zeros((n_i_states, n_j_states))
+        n_i, n_a, _ = R_i.shape
+        n_j = R_j.shape[0]
+        expected_R_i = np.sum(R_i * P_i, axis=2)
+        expected_R_j = np.sum(R_j * P_j, axis=2)
+        reward_diff = np.abs(
+            expected_R_i[:, None, :] - expected_R_j[None, :, :])
+        d = np.zeros((n_i, n_j))
         for it in range(self.max_iter):
             d_new = np.zeros_like(d)
-            for i in range(n_i_states):
-                for j in range(n_j_states):
-                    vals = []
-                    for a in range(n_actions):
-                        reward_diff = abs(
-                            expected_R_i[i, a] - expected_R_j[j, a])
-                        trans_diff = kantorovich_distance(
-                            d, P_i[i, a], P_j[j, a])
-                        if trans_diff is None:
-                            continue
-                        vals.append(reward_diff + self.c * trans_diff)
-                    d_new[i, j] = max(vals) if vals else 0
+            for i in range(n_i):
+                for j in range(n_j):
+                    max_d = 0.0
+                    for a in range(n_a):
+                        trans_diff = ot.emd2(P_i[i, a], P_j[j, a], d)
+                        max_d = max(
+                            max_d, reward_diff[i, j, a] + self.c * trans_diff)
+                    d_new[i, j] = max_d
             if np.max(np.abs(d_new - d)) < self.tol:
                 return d_new
             d = d_new
@@ -308,7 +310,7 @@ class ComplianceSimilarity(Similarity):
     source MDP would have generated those transitions with the same rewards.
     """
 
-    def __init__(self, n_samples=1000, policy=None, **kwargs):
+    def __init__(self, n_samples: int = 1000, policy: callable = None, **kwargs):
         """Initialize the compliance similarity.
 
         Args:
@@ -319,7 +321,7 @@ class ComplianceSimilarity(Similarity):
         self.n_samples = n_samples
         self.policy = policy
 
-    def _compute(self, env1, env2, **kwargs):
+    def _compute(self, env1: gym.Env, env2: gym.Env, **kwargs):
         """Compute compliance similarity as 1 - (avg. probability of sampled transitions)."""
         P1, R1 = get_model(env1.unwrapped)
         D_target = collect_experiences(
@@ -327,7 +329,7 @@ class ComplianceSimilarity(Similarity):
         distance = self._compliance_similarity(P1, R1, D_target)
         return 1 - distance
 
-    def _compliance_similarity(self, P_source, R_source, D_target):
+    def _compliance_similarity(self, P_source: np.ndarray, R_source: np.ndarray, D_target: list[tuple[int, int, int, float]]):
         """Compute compliance metric: average probability that source MDP generated target transitions.
 
         Args:
@@ -353,6 +355,8 @@ def construct_graph(P: np.ndarray, R: np.ndarray):
     The graph is bipartite: state nodes and action nodes. Connections:
     - decision_edges: which state connects to which action node
     - transition_edges: edges from action nodes to next state nodes with probabilities and rewards.
+
+    # Todo: Small dataclass instead of namedtuple for clarity.
 
     Returns:
         A namedtuple with graph information including arrays:
@@ -391,7 +395,7 @@ class GraphSimilarity(Similarity):
     by combining reward differences and the Kantorovich distance on transitions.
     """
 
-    def __init__(self, CS=0.9, CA=0.9, max_iter=50, tol=1e-4, **kwargs):
+    def __init__(self, CS: float = 0.9, CA: float = 0.9, max_iter: int = 50, tol: float = 1e-4, **kwargs):
         """Initialize graph similarity parameters.
 
         Args:
@@ -406,7 +410,7 @@ class GraphSimilarity(Similarity):
         self.max_iter = max_iter
         self.tol = tol
 
-    def _compute(self, env1, env2, **kwargs):
+    def _compute(self, env1: gym.Env, env2: gym.Env, **kwargs):
         """Compute final graph-based similarity between envs.
 
         Returns:
@@ -419,7 +423,7 @@ class GraphSimilarity(Similarity):
         S, _ = self._graph_distance(mdpg1, mdpg2)
         return 1 - kantorovich_distance(S)
 
-    def _graph_distance(self, mdpg1, mdpg2):
+    def _graph_distance(self, mdpg1: namedtuple, mdpg2: namedtuple):
         """Iteratively compute state (S) and action (A) similarity matrices.
 
         Returns:
@@ -430,7 +434,7 @@ class GraphSimilarity(Similarity):
         S = np.ones((mdpg1.num_state_nodes, mdpg2.num_state_nodes))
         A = np.ones((mdpg1.num_action_nodes, mdpg2.num_action_nodes))
 
-        for it in range(self.max_iter):
+        for _ in range(self.max_iter):
             S_old, A_old = S.copy(), A.copy()
 
             for a in range(mdpg1.num_action_nodes):
@@ -466,14 +470,14 @@ class HomomorphismSimilarity(Similarity):
     bisimulation but allowing actions to be matched (minimax fashion).
     """
 
-    def __init__(self, c=0.99, tol=1e-3, max_iter=25, **kwargs):
+    def __init__(self, c: float = 0.99, tol: float = 1e-3, max_iter: int = 25, **kwargs):
         """Initialize the homomorphism similarity measure."""
         super().__init__(**kwargs)
         self.c = c
         self.tol = tol
         self.max_iter = max_iter
 
-    def _compute(self, env1, env2, **kwargs):
+    def _compute(self, env1: gym.Env, env2: gym.Env, **kwargs):
         """Compute homomorphism-based similarity between `env1` and `env2`.
 
         Returns:
@@ -484,7 +488,7 @@ class HomomorphismSimilarity(Similarity):
         d_matrix = self._homomorphism_distance(R1, R2, P1, P2)
         return 1 - kantorovich_distance(d_matrix)
 
-    def _homomorphism_distance(self, R_i, R_j, P_i, P_j):
+    def _homomorphism_distance(self, R_i: np.ndarray, R_j: np.ndarray, P_i: np.ndarray, P_j: np.ndarray):
         """Compute pairwise state distance using a homomorphism criterion.
 
         Returns:
@@ -496,7 +500,7 @@ class HomomorphismSimilarity(Similarity):
             P_i, R_i), expected_rewards(P_j, R_j)
         d = np.zeros((n_i_states, n_j_states))
 
-        for it in range(self.max_iter):
+        for _ in range(self.max_iter):
             d_new = np.zeros_like(d)
             for i in range(n_i_states):
                 for j in range(n_j_states):
@@ -537,17 +541,19 @@ class RewardSimilarity(Similarity):
         """Initialize reward similarity measure."""
         super().__init__(**kwargs)
 
-    def _compute(self, env1, env2, **kwargs):
+    def _compute(self, env1: gym.Env, env2: gym.Env, **kwargs):
         """Compute the reward-based similarity between two environments."""
         P1, R1 = get_model(env1.unwrapped)
         P2, R2 = get_model(env2.unwrapped)
         return 1 - self._reward_distance(P1, R1, P2, R2)
 
-    def _reward_distance(self, P1, R1, P2, R2):
+    def _reward_distance(self, P1: np.ndarray, R1: np.ndarray, P2: np.ndarray, R2: np.ndarray):
         """Compute MSE between expected reward matrices of two MDPs."""
         R1_exp = expected_rewards(P1, R1)
         R2_exp = expected_rewards(P2, R2)
-        assert R1_exp.shape == R2_exp.shape, "Reward matrices must match in shape"
+        if R1_exp.shape != R2_exp.shape:
+            raise ValueError(
+                "Environments must have the same state and action spaces for RewardSimilarity.")
         diff = R1_exp - R2_exp
         mse = np.mean(diff ** 2)
         return mse
