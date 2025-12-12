@@ -1,24 +1,3 @@
-"""Similarity measures for Gymnasium discrete MDPs.
-
-This module provides classes and functions to compute a variety of
-similarity/distance metrics between discrete Gymnasium environments
-(e.g., FrozenLake). Implemented metrics include:
-
-- Bisimulation-based similarity
-- Compliance similarity (based on sampled transitions)
-- Graph-based similarity
-- Homomorphism similarity
-- Reward-based distance
-
-Utilities:
-- get_model: extract transition (P) and reward (R) matrices from env.P
-- expected_rewards: compute expected rewards per state-action
-- kantorovich_distance: compute Kantorovich (Wasserstein) distance
-- construct_graph: convert P/R into a bipartite graph representation
-
-A simple demo is provided when run as __main__.
-"""
-
 import time
 import numpy as np
 import gymnasium as gym
@@ -158,39 +137,6 @@ def expected_rewards(P: np.ndarray, R: np.ndarray):
     return np.einsum("san,san->sa", P, R)
 
 
-def kantorovich_distance(d: np.ndarray, p: np.ndarray = None, q: np.ndarray = None):
-    """Compute Kantorovich (Earth Mover) distance between distributions.
-
-    Args:
-        d: cost matrix (n x m) between source and target elements.
-        p: source distribution (length n); defaults to uniform.
-        q: target distribution (length m); defaults to uniform.
-
-    Returns:
-        The minimum transport cost (float).
-    """
-    n, m = d.shape
-    if p is None:
-        p = np.ones(n) / n
-    if q is None:
-        q = np.ones(m) / m
-    c = d.flatten()
-    A_eq, b_eq = [], []
-    for i in range(n):  # Row sums
-        row = np.zeros((n, m))
-        row[i, :] = 1
-        A_eq.append(row.flatten())
-        b_eq.append(p[i])
-    for j in range(m):  # Column sums
-        col = np.zeros((n, m))
-        col[:, j] = 1
-        A_eq.append(col.flatten())
-        b_eq.append(q[j])
-    A_eq, b_eq = np.array(A_eq), np.array(b_eq)
-    res = linprog(c, A_eq=A_eq, b_eq=b_eq, bounds=(0, None), method="highs")
-    return res.fun if res.fun is not None else 0  # Todo: handle infeasibility
-
-
 def hausdorff_distance(dA: np.ndarray, Nu: list[int], Nv: list[int]) -> float:
     """Compute Hausdorff distance between subsets of nodes given a distance matrix.
 
@@ -243,7 +189,7 @@ class BisimulationSimilarity(Similarity):
     based on reward differences and the Kantorovich distance over transitions.
     """
 
-    def __init__(self, c: float = 0.99, tol: float = 1e-3, max_iter: int = 25, **kwargs):
+    def __init__(self, c: float = 0.95, tol: float = 1e-4, max_iter: int = 75, **kwargs):
         """Initialize the bisimulation similarity.
 
         Args:
@@ -310,7 +256,10 @@ class ComplianceSimilarity(Similarity):
     source MDP would have generated those transitions with the same rewards.
     """
 
-    def __init__(self, n_samples: int = 1000, policy: callable = None, **kwargs):
+    def __init__(self,
+                 n_samples: int = 1000,
+                 policy: callable = None,
+                 **kwargs):
         """Initialize the compliance similarity.
 
         Args:
@@ -326,10 +275,13 @@ class ComplianceSimilarity(Similarity):
         P1, R1 = get_model(env1.unwrapped)
         D_target = collect_experiences(
             env2, n_samples=self.n_samples, policy=self.policy)
-        distance = self._compliance_similarity(P1, R1, D_target)
-        return 1 - distance
+        similarity = self._compliance_similarity(P1, R1, D_target)
+        return similarity
 
-    def _compliance_similarity(self, P_source: np.ndarray, R_source: np.ndarray, D_target: list[tuple[int, int, int, float]]):
+    def _compliance_similarity(self,
+                               P_source: np.ndarray,
+                               R_source: np.ndarray,
+                               D_target: list[tuple[int, int, int, float]]):
         """Compute compliance metric: average probability that source MDP generated target transitions.
 
         Args:
@@ -343,13 +295,18 @@ class ComplianceSimilarity(Similarity):
         probs = []
         for (s, a, s_next, r) in D_target:
             trans_prob = P_source[s, a, s_next]
-            reward_prob = 1.0 if np.isclose(R_source[s, a, s_next], r) else 0.0
+            try:
+                reward_prob = float(
+                    np.sum(P_source[s, a, :] * np.isclose(R_source[s, a, :], r)))
+            except IndexError:
+                reward_prob = 0.0
             probs.append(trans_prob * reward_prob)
-        compliance = np.mean(probs) if probs else 0.0
+        compliance = np.mean(probs)
         return compliance
 
 
-def construct_graph(P: np.ndarray, R: np.ndarray):
+def construct_graph(P: np.ndarray,
+                    R: np.ndarray):
     """Construct a graph representation of an MDP.
 
     The graph is bipartite: state nodes and action nodes. Connections:
@@ -383,8 +340,9 @@ def construct_graph(P: np.ndarray, R: np.ndarray):
                     transition_edge_rewards[action_node,
                                             s_next] = R[s, a, s_next]
 
-    return namedtuple('MDPGraph', ['num_state_nodes', 'num_action_nodes', 'decision_edges', 'transition_edges', 'transition_edge_probs', 'transition_edge_rewards'])(
-        num_state_nodes, num_action_nodes, decision_edges, transition_edges, transition_edge_probs, transition_edge_rewards
+    return namedtuple('MDPGraph',
+                      ['num_state_nodes', 'num_action_nodes', 'decision_edges', 'transition_edges', 'transition_edge_probs', 'transition_edge_rewards'])(
+                          num_state_nodes, num_action_nodes, decision_edges, transition_edges, transition_edge_probs, transition_edge_rewards
     )
 
 
@@ -395,7 +353,12 @@ class GraphSimilarity(Similarity):
     by combining reward differences and the Kantorovich distance on transitions.
     """
 
-    def __init__(self, CS: float = 0.9, CA: float = 0.9, max_iter: int = 50, tol: float = 1e-4, **kwargs):
+    def __init__(self,
+                 CS: float = 0.9,
+                 CA: float = 0.9,
+                 max_iter: int = 50,
+                 tol: float = 1e-4,
+                 **kwargs):
         """Initialize graph similarity parameters.
 
         Args:
@@ -410,7 +373,10 @@ class GraphSimilarity(Similarity):
         self.max_iter = max_iter
         self.tol = tol
 
-    def _compute(self, env1: gym.Env, env2: gym.Env, **kwargs):
+    def _compute(self,
+                 env1: gym.Env,
+                 env2: gym.Env,
+                 **kwargs):
         """Compute final graph-based similarity between envs.
 
         Returns:
@@ -421,9 +387,12 @@ class GraphSimilarity(Similarity):
         mdpg1 = construct_graph(P1, R1)
         mdpg2 = construct_graph(P2, R2)
         S, _ = self._graph_distance(mdpg1, mdpg2)
-        return 1 - kantorovich_distance(S)
+        return 1 - ot.emd2(np.ones(S.shape[0]) / S.shape[0],
+                           np.ones(S.shape[1]) / S.shape[1], S)
 
-    def _graph_distance(self, mdpg1: namedtuple, mdpg2: namedtuple):
+    def _graph_distance(self,
+                        mdpg1: namedtuple,
+                        mdpg2: namedtuple):
         """Iteratively compute state (S) and action (A) similarity matrices.
 
         Returns:
@@ -444,7 +413,7 @@ class GraphSimilarity(Similarity):
                     pb = mdpg2.transition_edge_probs[b]
                     rb = mdpg2.transition_edge_rewards[b]
                     drwd = abs(np.sum(pa * ra) - np.sum(pb * rb))
-                    demd = kantorovich_distance(1 - S, pa, pb)
+                    demd = ot.emd2(pa, pb, 1 - S)
                     A[a, b] = 1 - (1 - self.CA) * drwd - self.CA * demd
 
             for u in range(mdpg1.num_state_nodes):
@@ -470,7 +439,11 @@ class HomomorphismSimilarity(Similarity):
     bisimulation but allowing actions to be matched (minimax fashion).
     """
 
-    def __init__(self, c: float = 0.99, tol: float = 1e-3, max_iter: int = 25, **kwargs):
+    def __init__(self,
+                 c: float = 0.95,
+                 tol: float = 1e-4,
+                 max_iter: int = 75,
+                 **kwargs):
         """Initialize the homomorphism similarity measure."""
         super().__init__(**kwargs)
         self.c = c
@@ -486,9 +459,14 @@ class HomomorphismSimilarity(Similarity):
         P1, R1 = get_model(env1.unwrapped)
         P2, R2 = get_model(env2.unwrapped)
         d_matrix = self._homomorphism_distance(R1, R2, P1, P2)
-        return 1 - kantorovich_distance(d_matrix)
+        return 1 - ot.emd2(np.ones(d_matrix.shape[0]) / d_matrix.shape[0],
+                           np.ones(d_matrix.shape[1]) / d_matrix.shape[1], d_matrix)
 
-    def _homomorphism_distance(self, R_i: np.ndarray, R_j: np.ndarray, P_i: np.ndarray, P_j: np.ndarray):
+    def _homomorphism_distance(self,
+                               R_i: np.ndarray,
+                               R_j: np.ndarray,
+                               P_i: np.ndarray,
+                               P_j: np.ndarray):
         """Compute pairwise state distance using a homomorphism criterion.
 
         Returns:
@@ -506,25 +484,27 @@ class HomomorphismSimilarity(Similarity):
                 for j in range(n_j_states):
                     max_i = 0.0
                     for a_i in range(n_i_actions):
-                        vals = []
+                        min_d = float('inf')
                         for a_j in range(n_j_actions):
                             reward_diff = abs(
                                 expected_R_i[i, a_i] - expected_R_j[j, a_j])
-                            trans_diff = kantorovich_distance(
-                                d, P_i[i, a_i], P_j[j, a_j])
-                            vals.append(reward_diff + self.c * trans_diff)
-                        max_i = max(max_i, min(vals) if vals else 0)
+                            trans_diff = ot.emd2(P_i[i, a_i], P_j[j, a_j], d)
+                            min_d = min(min_d, reward_diff +
+                                        self.c * trans_diff)
+                        max_i = max(max_i, min_d if min_d !=
+                                    float('inf') else 0)
 
                     max_j = 0.0
                     for a_j in range(n_j_actions):
-                        vals = []
+                        min_d = float('inf')
                         for a_i in range(n_i_actions):
                             reward_diff = abs(
                                 expected_R_i[i, a_i] - expected_R_j[j, a_j])
-                            trans_diff = kantorovich_distance(
-                                d, P_i[i, a_i], P_j[j, a_j])
-                            vals.append(reward_diff + self.c * trans_diff)
-                        max_j = max(max_j, min(vals) if vals else 0)
+                            trans_diff = ot.emd2(P_i[i, a_i], P_j[j, a_j], d)
+                            min_d = min(min_d, reward_diff +
+                                        self.c * trans_diff)
+                        max_j = max(max_j, min_d if min_d !=
+                                    float('inf') else 0)
 
                     d_new[i, j] = max(max_i, max_j)
 
@@ -561,7 +541,7 @@ class RewardSimilarity(Similarity):
 
 if __name__ == "__main__":
     # Simple demo of similarity measures on FrozenLake environments
-    maps = [
+    maps4x4 = [
         ['SFFF',
          'FFFF',
          'FFFF',
@@ -579,18 +559,85 @@ if __name__ == "__main__":
          'HHHH',
          'HHHG']
     ]
-    slippery = [False, False, False, False]
-    env_idx = 2, 0
+    maps6x6 = [
+        [  # 0: Open / mostly free with a few holes (baseline)
+            "SFFFFF",
+            "FFFFFF",
+            "FFFHFF",
+            "FFFFFF",
+            "FFFFHF",
+            "FFFFFG",
+        ],
+        [  # 1: Checkerboard-heavy holes (high fragmentation)
+            "SHFHFH",
+            "HFHFHF",
+            "FHFHFH",
+            "HFHFHF",
+            "FHFHFH",
+            "HFHFHG",
+        ],
+        [  # 2: Snake / narrow-corridor style (constrains paths)
+            "SFFFFH",
+            "HHHFFH",
+            "HFFHFF",
+            "HFFHHF",
+            "HFFFHF",
+            "HFFFFG",
+        ],
+        [  # 3: Clustered holes creating large blocked region with one detour
+            "SFFFFF",
+            "FFFFHF",
+            "FFHHHF",
+            "FFFHHF",
+            "FFHHFF",
+            "FFFFFG",
+        ],
+        [  # 4: Mirror of map 2 (tests symmetry-aware similarity)
+            row[::-1] for row in [
+                "SFFFFH",
+                "HHHFFH",
+                "HFFHFF",
+                "HFFHHF",
+                "HFFFHF",
+                "HFFFFG",
+            ]
+        ],
+        [  # 5: Goal-guarded trap — holes around G except a single approach
+            "SFFFFF",
+            "FFFFFF",
+            "FFFFFF",
+            "FFFFFF",
+            "FFFFHH",
+            "FFFFHG",
+        ],
+        [  # 6: Diagonal-offset holes (symmetric pattern along one axis)
+            "SFFFFF",
+            "HFFFFF",
+            "FHFFFF",
+            "FFHFFF",
+            "FFFHFF",
+            "FFFFFG",
+        ],
+        [  # 7: Two large safe regions connected by a single narrow bridge
+            "SFFFFF",
+            "HHHHHF",
+            "FFFHFF",
+            "FFFHFF",
+            "FFFHFF",
+            "FFFFFG",
+        ],
+    ]
+    env_idx = 2, 4
 
     env_1 = gym.make(
-        "FrozenLake-v1", desc=maps[env_idx[0]], is_slippery=slippery[env_idx[0]])
+        "FrozenLake-v1", desc=maps6x6[env_idx[0]], is_slippery=False)
     env_2 = gym.make(
-        "FrozenLake-v1", desc=maps[env_idx[1]], is_slippery=slippery[env_idx[1]])
+        "FrozenLake-v1", desc=maps6x6[env_idx[1]], is_slippery=False)
     metrics = [
-        ("Bisimulation", BisimulationSimilarity(c=0.99, tol=1e-3, max_iter=25)),
-        ("Compliance", ComplianceSimilarity(n_samples=500)),
+        ("Bisimulation", BisimulationSimilarity(c=0.95, tol=1e-4, max_iter=75)),
+        ("Compliance", ComplianceSimilarity(n_samples=10000)),
         # ("Graph", GraphSimilarity(max_iter=10)),
-        # ("Homomorphism", HomomorphismSimilarity(c=0.99, tol=1e-3, max_iter=25)),
+        ("Homomorphism", HomomorphismSimilarity(c=0.95, tol=1e-4, max_iter=75)),
         ("Reward", RewardSimilarity()),
     ]
 
