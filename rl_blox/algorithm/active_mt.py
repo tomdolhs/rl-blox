@@ -18,13 +18,14 @@ from ..blox.replay_buffer import MultiTaskReplayBuffer
 from ..blox.similarity import BisimulationSimilarity
 from ..logging.logger import LoggerBase
 
+
 def train_active_mt(
     mt_def: DiscreteTaskSet,
     train_st: Callable,
     replay_buffer: MultiTaskReplayBuffer,
     r_max: float,
     ducb_gamma: float = 0.95,
-    temperature: float = 1.0,
+    temperature: float = 0.25,
     xi: float = 0.002,
     task_selector: TaskSelector | str = "Monotonic Progress",
     total_timesteps: int = 1_000_000,
@@ -183,7 +184,7 @@ def train_active_mt(
     global_step = 0
     training_steps = np.zeros(len(mt_def), dtype=int)
     progress = tqdm(total=total_timesteps, disable=not progress_bar)
-    returns_per_task = [[] for _ in range(len(mt_def))]
+    returns = [[] for _ in range(len(mt_def))]
 
     if isinstance(task_selector, str):
         assert task_selector in TASK_SELECTORS, (
@@ -234,15 +235,16 @@ def train_active_mt(
 
         assert len(env_with_stats.return_queue) > 0
         mean_return = np.mean(env_with_stats.return_queue)
-        if logger is not None:
-            returns_per_task[task_id].append(mean_return)
-            logger.record_stat(f"mean return task {task_id}", np.mean(returns_per_task[task_id]), step=global_step)
-            logger.record_stat(f"counter task {task_id}", len(returns_per_task[task_id]), step=global_step)
         task_selector.feedback(mean_return)
 
         steps = sum(env_with_stats.length_queue)
         training_steps[task_id] += steps
         global_step += steps
+
+        if logger is not None:
+            returns[task_id].extend(env_with_stats.return_queue)
+            logger.record_stat(f"mean return task {task_id}", np.mean(returns[task_id][-100:]), step=global_step)
+            logger.record_stat(f"steps task {task_id}", training_steps[task_id], step=global_step)
 
         progress.update(steps)
 

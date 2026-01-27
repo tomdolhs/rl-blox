@@ -8,9 +8,9 @@ from gymnasium.wrappers import TransformObservation
 from numpy.typing import ArrayLike
 from scipy.special import softmax
 
-from .similarity import Similarity
-from ..blox.mapb import DUCB
-from ..logging.logger import AIMLogger
+from rl_blox.blox.similarity import Similarity
+from rl_blox.blox.mapb import DUCB
+from rl_blox.logging.logger import AIMLogger
 
 
 class TaskSelectionMixin:
@@ -95,7 +95,7 @@ class DiscreteTaskSet:
 
 
 class TaskSelector:
-    def __init__(self, tasks, logger: AIMLogger | None=None):
+    def __init__(self, tasks, logger: AIMLogger | None = None):
         self.tasks = tasks
         self.waiting_for_reward = False
         self.logger = logger
@@ -284,7 +284,7 @@ class SimilaritySelector(TaskSelector):
         self.similarity_matrix = similarity_metric.compute_matrix(tasks)
         self.sampling_probs = softmax(np.sum(self.similarity_matrix, axis=1) / temperature)
         if inverse:
-            self.sampling_probs = 1.0 - self.sampling_probs
+            self.sampling_probs = 1.0 / self.sampling_probs
         self.sampling_probs /= np.sum(self.sampling_probs)
 
     def select(self) -> int:
@@ -299,3 +299,19 @@ class SimilaritySelector(TaskSelector):
 
     def feedback(self, reward: float):
         super().feedback(reward)
+
+
+if __name__ == "__main__":
+    np.set_printoptions(suppress=True)
+    similarity_matrix = np.array([[1., 0.23962035, 0.23962035, 0.32731018, 0.27203236],
+                                  [0.23962035, 1., 0.44176814, 0.42029145, 0.17220041],
+                                  [0.23962035, 0.44176814, 1., 0.48556513, 0.17220041],
+                                  [0.32731018, 0.42029145, 0.48556513, 1., 0.16641135],
+                                  [0.27203236, 0.17220041, 0.17220041, 0.16641135, 1.]])
+    temperature = 0.25
+    inverse = True
+    sampling_probs = softmax(np.sum(similarity_matrix, axis=1) / temperature)
+    if inverse:
+        sampling_probs = 1.0 / sampling_probs
+    sampling_probs /= np.sum(sampling_probs)
+    print("Sampling probabilities:", sampling_probs)
